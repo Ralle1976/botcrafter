@@ -26,11 +26,26 @@ db_config = {
     "database": os.getenv("DB_NAME"),
 }
 
+# Globale Debugging-Funktion
+def log_request_details():
+    headers = dict(request.headers)
+    body = request.get_json(silent=True)
+    args = request.args.to_dict()
+
+    logger.info("Headers: %s", headers)
+    logger.info("Body: %s", body)
+    logger.info("Args: %s", args)
+
 @app.before_request
-def authorize_request():
+def before_request():
+    log_request_details()  # Loggt alle Anfragen
     token = request.headers.get("Authorization")
     if token != API_TOKEN:
         return jsonify({"status": "error", "message": "Unauthorized"}), 401
+
+@app.route('/test', methods=['GET', 'POST'])
+def test_route():
+    return jsonify({"status": "success", "message": "Test erfolgreich"})
 
 @app.route('/db_test', methods=['GET'])
 def db_test():
