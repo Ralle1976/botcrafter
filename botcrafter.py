@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 # Logging konfigurieren
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Umgebungsvariablen laden
 dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
