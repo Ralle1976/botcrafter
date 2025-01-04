@@ -14,7 +14,7 @@ load_dotenv(dotenv_path)
 
 # Flask-App erstellen
 app = Flask(__name__)
-app.debug = True
+#app.debug = True
 
 # API-Token für die Autorisierung
 API_TOKEN = os.getenv("API_TOKEN")
