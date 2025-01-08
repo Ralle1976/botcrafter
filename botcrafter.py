@@ -1,3 +1,6 @@
+
+
+
 import os
 import logging
 import mysql.connector
@@ -70,6 +73,16 @@ def initialize_database():
                 event_type VARCHAR(255),
                 details TEXT,
                 logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Tabelle 'Test' erstellen
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Test (
+                Spalte1 TEXT NULL,
+                Spalte2 TEXT NULL,
+                Spalte3 TEXT NULL,
+                Spalte4 TEXT NULL
             )
         ''')
 
@@ -157,6 +170,43 @@ def get_entries():
 
     except mysql.connector.Error as e:
         logger.error(f"Fehler beim Abrufen der Einträge: {str(e)}")
+        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
+
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+        if 'conn' in locals() and conn:
+            conn.close()
+
+# Beispiel-Route zum Testen von Einfügen und Abrufen
+@app.route('/test-insert-and-fetch', methods=['POST'])
+def test_insert_and_fetch():
+    try:
+        # Einfügen von Testdaten
+        test_data = {
+            "Spalte1": "Wert1",
+            "Spalte2": "Wert2",
+            "Spalte3": "Wert3",
+            "Spalte4": "Wert4"
+        }
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        placeholders = ', '.join(['%s'] * len(test_data))
+        columns = ', '.join(test_data.keys())
+        sql = f"INSERT INTO Test ({columns}) VALUES ({placeholders})"
+        cursor.execute(sql, list(test_data.values()))
+        conn.commit()
+
+        # Abrufen der Daten
+        cursor.execute("SELECT * FROM Test")
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        data = [dict(zip(columns, row)) for row in rows]
+
+        return jsonify({"status": "success", "inserted_data": test_data, "fetched_data": data})
+
+    except mysql.connector.Error as e:
+        logger.error(f"Fehler beim Einfügen und Abrufen: {str(e)}")
         return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
 
     finally:
