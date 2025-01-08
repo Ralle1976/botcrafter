@@ -283,10 +283,10 @@ def handle_error(error):
         "error": str(error)
     }), 500
 
-if __name__ == '__main__':
+#if __name__ == '__main__':
     # Starten Sie die Anwendung mit SSL im Produktionsmodus
-    app.run(
-        host='0.0.0.0',
-        port=int(os.getenv('PORT', 5000)),
-        ssl_context='adhoc' if os.getenv('ENVIRONMENT') == 'production' else None
-    )
+ #   app.run(
+  #      host='0.0.0.0',
+   #     port=int(os.getenv('PORT', 5000)),
+    #    ssl_context='adhoc' if os.getenv('ENVIRONMENT') == 'production' else None
+   # )
