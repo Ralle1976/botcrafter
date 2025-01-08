@@ -1,4 +1,5 @@
 flask
+functools 
 gunicorn
 requests
 mysql-connector-python
