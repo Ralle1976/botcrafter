@@ -14,7 +14,7 @@ load_dotenv(dotenv_path)
 
 # Flask-App erstellen
 app = Flask(__name__)
-#app.debug = True
+# app.debug = True
 
 # API-Token für die Autorisierung
 API_TOKEN = os.getenv("API_TOKEN")
@@ -43,6 +43,54 @@ def before_request():
     token = request.headers.get("Authorization")
     if token != API_TOKEN:
         return jsonify({"status": "error", "message": "Unauthorized"}), 401
+
+# Funktion zur Initialisierung der Datenbank
+def initialize_database():
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # Tabelle 'tasks' erstellen
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tasks (
+                task_id INT AUTO_INCREMENT PRIMARY KEY,
+                task_type VARCHAR(255),
+                status VARCHAR(50),
+                assigned_to VARCHAR(255),
+                priority INT,
+                details TEXT,
+                fast_interval BOOLEAN DEFAULT FALSE
+            )
+        ''')
+
+        # Tabelle 'logs' erstellen
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logs (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                event_type VARCHAR(255),
+                details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        conn.commit()
+        logger.info("Datenbank erfolgreich initialisiert.")
+    except mysql.connector.Error as e:
+        logger.error(f"Fehler bei der Initialisierung der Datenbank: {str(e)}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+        if 'conn' in locals() and conn:
+            conn.close()
+
+@app.route('/init-db', methods=['GET'])
+def init_db():
+    try:
+        initialize_database()
+        return jsonify({"status": "success", "message": "Datenbank und Tabellen erfolgreich initialisiert."})
+    except Exception as e:
+        logger.error(f"Fehler bei der Datenbankinitialisierung: {str(e)}")
+        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
 
 @app.route('/test', methods=['GET', 'POST'])
 def test_route():
