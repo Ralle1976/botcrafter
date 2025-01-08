@@ -241,6 +241,37 @@ def log_event():
         return jsonify({"status": "success", "message": "Event logged successfully"})
     return jsonify({"status": "error", "message": error}), 500
 
+@app.route('/test-insert-and-fetch', methods=['POST'])
+@require_auth
+def test_insert_and_fetch():
+    """Fügt Testdaten in die Tabelle 'Test' ein und ruft sie ab"""
+    try:
+        test_data = {
+            "Spalte1": "Wert1",
+            "Spalte2": "Wert2",
+            "Spalte3": "Wert3",
+            "Spalte4": "Wert4"
+        }
+        
+        columns = ', '.join(test_data.keys())
+        placeholders = ', '.join(['%s'] * len(test_data))
+        query = f"INSERT INTO Test ({columns}) VALUES ({placeholders})"
+        
+        success, error = DatabaseManager.execute_query(query, tuple(test_data.values()), fetch=False)
+        if not success:
+            return jsonify({"status": "error", "message": error}), 500
+
+        query = "SELECT * FROM Test"
+        success, result = DatabaseManager.execute_query(query)
+        if not success:
+            return jsonify({"status": "error", "message": result}), 500
+
+        return jsonify({"status": "success", "inserted_data": test_data, "fetched_data": result})
+
+    except Exception as e:
+        logger.error(f"Error in test_insert_and_fetch: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 # Error Handler
 @app.errorhandler(Exception)
 def handle_error(error):
