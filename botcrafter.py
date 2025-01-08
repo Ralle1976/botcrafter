@@ -1,57 +1,91 @@
 import os
 import logging
+from typing import Dict, Any, Optional, List
+from functools import wraps
 import mysql.connector
-from flask import Flask, request, jsonify
+from mysql.connector import pooling
+from flask import Flask, request, jsonify, Response
 from dotenv import load_dotenv
 
-# Logging konfigurieren
-logging.basicConfig(level=logging.INFO)
+# Logging-Konfiguration mit formatierter Ausgabe
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Umgebungsvariablen laden
-dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
-load_dotenv(dotenv_path)
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 # Flask-App erstellen
 app = Flask(__name__)
-# app.debug = True
 
-# API-Token für die Autorisierung
+# Konfigurationskonstanten
 API_TOKEN = os.getenv("API_TOKEN")
-
-# MySQL-Konfiguration
-db_config = {
+DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
     "user": os.getenv("DB_USER"),
     "password": os.getenv("DB_PASSWORD"),
     "database": os.getenv("DB_NAME"),
+    "pool_name": "mypool",
+    "pool_size": 5
 }
 
-# Globale Debugging-Funktion
-def log_request_details():
-    headers = dict(request.headers)
-    body = request.get_json(silent=True)
-    args = request.args.to_dict()
+# Connection Pool erstellen
+try:
+    connection_pool = mysql.connector.pooling.MySQLConnectionPool(**DB_CONFIG)
+    logger.info("Database connection pool initialized successfully")
+except mysql.connector.Error as e:
+    logger.error(f"Error creating connection pool: {e}")
+    raise
 
-    logger.info("Headers: %s", headers)
-    logger.info("Body: %s", body)
-    logger.info("Args: %s", args)
+def require_auth(f):
+    """Decorator für API-Token-Authentifizierung"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = request.headers.get("Authorization")
+        if token != API_TOKEN:
+            return jsonify({"status": "error", "message": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated_function
 
-@app.before_request
-def before_request():
-    log_request_details()  # Loggt alle Anfragen
-    token = request.headers.get("Authorization")
-    if token != API_TOKEN:
-        return jsonify({"status": "error", "message": "Unauthorized"}), 401
+class DatabaseManager:
+    """Klasse für das Datenbankmanagement"""
+    @staticmethod
+    def get_connection():
+        """Verbindung aus dem Pool holen"""
+        return connection_pool.get_connection()
 
-# Funktion zur Initialisierung der Datenbank
-def initialize_database():
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
+    @staticmethod
+    def execute_query(query: str, params: tuple = None, fetch: bool = True) -> tuple:
+        """Generische Methode für Datenbankabfragen"""
+        conn = None
+        cursor = None
+        try:
+            conn = DatabaseManager.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(query, params or ())
+            
+            if fetch:
+                result = cursor.fetchall()
+                return True, result
+            
+            conn.commit()
+            return True, None
+            
+        except mysql.connector.Error as e:
+            logger.error(f"Database error: {e}")
+            return False, str(e)
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
-        # Tabelle 'tasks' erstellen
-        cursor.execute('''
+def init_tables() -> None:
+    """Initialisiert alle Datenbanktabellen"""
+    tables = {
+        'tasks': '''
             CREATE TABLE IF NOT EXISTS tasks (
                 task_id INT AUTO_INCREMENT PRIMARY KEY,
                 task_type VARCHAR(255),
@@ -59,426 +93,169 @@ def initialize_database():
                 assigned_to VARCHAR(255),
                 priority INT,
                 details TEXT,
-                fast_interval BOOLEAN DEFAULT FALSE
+                fast_interval BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
-
-        # Tabelle 'logs' erstellen
-        cursor.execute('''
+        ''',
+        'logs': '''
             CREATE TABLE IF NOT EXISTS logs (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 event_type VARCHAR(255),
                 details TEXT,
                 logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
-
-        # Tabelle 'Test' erstellen
-        cursor.execute('''
+        ''',
+        'Test': '''
             CREATE TABLE IF NOT EXISTS Test (
+                id INT AUTO_INCREMENT PRIMARY KEY,
                 Spalte1 TEXT NULL,
                 Spalte2 TEXT NULL,
                 Spalte3 TEXT NULL,
-                Spalte4 TEXT NULL
+                Spalte4 TEXT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        '''
+    }
+    
+    for table_name, create_statement in tables.items():
+        success, error = DatabaseManager.execute_query(create_statement, fetch=False)
+        if not success:
+            logger.error(f"Failed to create table {table_name}: {error}")
 
-        conn.commit()
-        logger.info("Datenbank erfolgreich initialisiert.")
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler bei der Initialisierung der Datenbank: {str(e)}")
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+# API-Routen
+
+@app.before_request
+def before_request():
+    """Logging für alle Anfragen"""
+    logger.info(f"Request: {request.method} {request.path}")
+    logger.info(f"Headers: {dict(request.headers)}")
+    if request.get_json(silent=True):
+        logger.info(f"Body: {request.get_json()}")
 
 @app.route('/init-db', methods=['GET'])
+@require_auth
 def init_db():
+    """Initialisiert die Datenbank"""
     try:
-        initialize_database()
-        return jsonify({"status": "success", "message": "Datenbank und Tabellen erfolgreich initialisiert."})
+        init_tables()
+        return jsonify({"status": "success", "message": "Database initialized successfully"})
     except Exception as e:
-        logger.error(f"Fehler bei der Datenbankinitialisierung: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-
-@app.route('/test', methods=['GET', 'POST'])
-def test_route():
-    return jsonify({"status": "success", "message": "Test erfolgreich"})
-
-@app.route('/db_test', methods=['GET'])
-def db_test():
-    try:
-        conn = mysql.connector.connect(**db_config)
-        return jsonify({"status": "success", "message": "Datenbankverbindung erfolgreich"})
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler bei der Datenbankverbindung: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler bei der Datenbankverbindung: {str(e)}"}), 500
-    finally:
-        if 'conn' in locals() and conn:
-            conn.close()
+        logger.error(f"Database initialization error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/add_entry', methods=['POST'])
+@require_auth
 def add_entry():
+    """Fügt einen Eintrag in eine beliebige Tabelle ein"""
     data = request.get_json()
     table = data.get('table')
     values = data.get('values')
 
     if not table or not values:
-        return jsonify({"status": "error", "message": "Tabelle oder Werte fehlen"}), 400
+        return jsonify({"status": "error", "message": "Missing table or values"}), 400
 
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-
-        placeholders = ', '.join(['%s'] * len(values))
-        columns = ', '.join(values.keys())
-        sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
-        cursor.execute(sql, list(values.values()))
-        conn.commit()
-
-        return jsonify({"status": "success", "message": "Eintrag erfolgreich hinzugefügt"})
-
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Hinzufügen zur Datenbank: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+    columns = ', '.join(values.keys())
+    placeholders = ', '.join(['%s'] * len(values))
+    query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+    
+    success, result = DatabaseManager.execute_query(query, tuple(values.values()), fetch=False)
+    
+    if success:
+        return jsonify({"status": "success", "message": "Entry added successfully"})
+    return jsonify({"status": "error", "message": result}), 500
 
 @app.route('/get_entries', methods=['GET'])
+@require_auth
 def get_entries():
+    """Ruft alle Einträge aus einer Tabelle ab"""
     table = request.args.get('table')
-
     if not table:
-        return jsonify({"status": "error", "message": "Tabelle nicht angegeben"}), 400
+        return jsonify({"status": "error", "message": "Table not specified"}), 400
 
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-
-        # Prüfe, ob Tabelle existiert
-        cursor.execute(f"SHOW TABLES LIKE '{table}'")
-        result = cursor.fetchone()
-        if not result:
-            return jsonify({"status": "error", "message": f"Tabelle '{table}' existiert nicht"}), 404
-
-        # Daten abrufen
-        sql = f"SELECT * FROM {table}"
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
-        return jsonify({"status": "success", "data": [dict(zip(columns, row)) for row in rows]})
-
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Abrufen der Einträge: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
-
-# Beispiel-Route zum Testen von Einfügen und Abrufen
-@app.route('/test-insert-and-fetch', methods=['POST'])
-def test_insert_and_fetch():
-    try:
-        # Einfügen von Testdaten
-        test_data = {
-            "Spalte1": "Wert1",
-            "Spalte2": "Wert2",
-            "Spalte3": "Wert3",
-            "Spalte4": "Wert4"
-        }
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-
-        # Prüfe, ob Tabelle existiert
-        cursor.execute("SHOW TABLES LIKE 'Test'")
-        result = cursor.fetchone()
-        if not result:
-            return jsonify({"status": "error", "message": "Tabelle 'Test' existiert nicht"}), 404
-
-        placeholders = ', '.join(['%s'] * len(test_data))
-        columns = ', '.join(test_data.keys())
-        sql = f"INSERT INTO Test ({columns}) VALUES ({placeholders})"
-        cursor.execute(sql, list(test_data.values()))
-        conn.commit()
-
-        # Abrufen der Daten
-        cursor.execute("SELECT * FROM Test")
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
-        data = [dict(zip(columns, row)) for row in rows]
-
-        return jsonify({"status": "success", "inserted_data": test_data, "fetched_data": data})
-
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Einfügen und Abrufen: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
-
-# Beispiel-Route zum Testen von Einfügen und Abrufen
-@app.route('/test-insert-and-fetch', methods=['POST'])
-def test_insert_and_fetch():
-    try:
-        # Einfügen von Testdaten
-        test_data = {
-            "Spalte1": "Wert1",
-            "Spalte2": "Wert2",
-            "Spalte3": "Wert3",
-            "Spalte4": "Wert4"
-        }
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        placeholders = ', '.join(['%s'] * len(test_data))
-        columns = ', '.join(test_data.keys())
-        sql = f"INSERT INTO Test ({columns}) VALUES ({placeholders})"
-        cursor.execute(sql, list(test_data.values()))
-        conn.commit()
-
-        # Abrufen der Daten
-        cursor.execute("SELECT * FROM Test")
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
-        data = [dict(zip(columns, row)) for row in rows]
-
-        return jsonify({"status": "success", "inserted_data": test_data, "fetched_data": data})
-
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Einfügen und Abrufen: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+    query = f"SELECT * FROM {table}"
+    success, result = DatabaseManager.execute_query(query)
+    
+    if success:
+        return jsonify({"status": "success", "data": result})
+    return jsonify({"status": "error", "message": result}), 500
 
 @app.route('/update_task_status', methods=['POST'])
+@require_auth
 def update_task_status():
+    """Aktualisiert den Status eines Tasks"""
     data = request.get_json()
     task_id = data.get('task_id')
     new_status = data.get('status')
 
     if not task_id or not new_status:
-        return jsonify({"status": "error", "message": "Task-ID oder Status fehlt"}), 400
+        return jsonify({"status": "error", "message": "Missing task_id or status"}), 400
 
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        sql = "UPDATE tasks SET status = %s WHERE task_id = %s"
-        cursor.execute(sql, (new_status, task_id))
-        conn.commit()
-
-        return jsonify({"status": "success", "message": "Task-Status aktualisiert"})
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Aktualisieren des Task-Status: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+    query = "UPDATE tasks SET status = %s WHERE task_id = %s"
+    success, error = DatabaseManager.execute_query(query, (new_status, task_id), fetch=False)
+    
+    if success:
+        return jsonify({"status": "success", "message": "Task status updated successfully"})
+    return jsonify({"status": "error", "message": error}), 500
 
 @app.route('/get_pending_tasks', methods=['GET'])
+@require_auth
 def get_pending_tasks():
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        sql = "SELECT * FROM tasks WHERE status = 'pending'"
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
-        return jsonify({"status": "success", "tasks": [dict(zip(columns, row)) for row in rows]})
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Abrufen der ausstehenden Aufgaben: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
-
-@app.route('/add_task', methods=['POST'])
-def add_task():
-    data = request.get_json()
-    task_type = data.get('task_type')
-    assigned_to = data.get('assigned_to')
-    priority = data.get('priority', 1)
-    details = data.get('details', '')
-
-    if not task_type or not assigned_to:
-        return jsonify({"status": "error", "message": "Task-Typ oder zugewiesener GPT fehlt"}), 400
-
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        sql = """
-            INSERT INTO tasks (task_type, status, assigned_to, priority, details)
-            VALUES (%s, 'pending', %s, %s, %s)
-        """
-        cursor.execute(sql, (task_type, assigned_to, priority, details))
-        conn.commit()
-
-        return jsonify({"status": "success", "message": "Task erfolgreich hinzugefügt"})
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Hinzufügen des Tasks: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
-
-@app.route('/mark_task_intensive', methods=['POST'])
-def mark_task_intensive():
-    data = request.get_json()
-    task_id = data.get('task_id')
-
-    if not task_id:
-        return jsonify({"status": "error", "message": "Task-ID fehlt"}), 400
-
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        sql = "UPDATE tasks SET fast_interval = TRUE WHERE task_id = %s"
-        cursor.execute(sql, (task_id,))
-        conn.commit()
-        return jsonify({"status": "success", "message": "Task als intensiv markiert"})
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Markieren des Tasks: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+    """Ruft alle ausstehenden Tasks ab"""
+    query = "SELECT * FROM tasks WHERE status = 'pending' ORDER BY priority DESC, created_at ASC"
+    success, result = DatabaseManager.execute_query(query)
+    
+    if success:
+        return jsonify({"status": "success", "tasks": result})
+    return jsonify({"status": "error", "message": result}), 500
 
 @app.route('/get_high_priority_tasks', methods=['GET'])
+@require_auth
 def get_high_priority_tasks():
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        sql = "SELECT * FROM tasks WHERE fast_interval = TRUE AND status = 'pending'"
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
-        return jsonify({"status": "success", "tasks": [dict(zip(columns, row)) for row in rows]})
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Abrufen der priorisierten Aufgaben: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
-
-@app.route('/get_logs', methods=['GET'])
-def get_logs():
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        sql = "SELECT * FROM logs ORDER BY logged_at DESC LIMIT 100"
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
-        return jsonify({"status": "success", "logs": [dict(zip(columns, row)) for row in rows]})
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Abrufen der Logs: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+    """Ruft alle hochprioritären Tasks ab"""
+    query = """
+        SELECT * FROM tasks 
+        WHERE fast_interval = TRUE AND status = 'pending'
+        ORDER BY priority DESC, created_at ASC
+    """
+    success, result = DatabaseManager.execute_query(query)
+    
+    if success:
+        return jsonify({"status": "success", "tasks": result})
+    return jsonify({"status": "error", "message": result}), 500
 
 @app.route('/log_event', methods=['POST'])
+@require_auth
 def log_event():
+    """Protokolliert ein Event"""
     data = request.get_json()
     event_type = data.get('event_type')
     details = data.get('details')
 
     if not event_type or not details:
-        return jsonify({"status": "error", "message": "Event-Typ oder Details fehlen"}), 400
+        return jsonify({"status": "error", "message": "Missing event_type or details"}), 400
 
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS logs (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                event_type VARCHAR(255),
-                details TEXT,
-                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cursor.execute("INSERT INTO logs (event_type, details) VALUES (%s, %s)", (event_type, details))
-        conn.commit()
-        return jsonify({"status": "success", "message": "Event erfolgreich protokolliert"})
-    except mysql.connector.Error as e:
-        logger.error(f"Fehler beim Loggen des Events: {str(e)}")
-        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+    query = "INSERT INTO logs (event_type, details) VALUES (%s, %s)"
+    success, error = DatabaseManager.execute_query(query, (event_type, details), fetch=False)
+    
+    if success:
+        return jsonify({"status": "success", "message": "Event logged successfully"})
+    return jsonify({"status": "error", "message": error}), 500
 
-@app.route('/get_map_data', methods=['GET'])
-def get_map_data():
-    map_id = request.args.get('map_id')
-    if not map_id:
-        return jsonify({"status": "error", "message": "Map-ID fehlt"}), 400
-    try:
-        # Dynamische Datenbankabfrage (Platzhalter)
-        map_data = {}  # Hier könnte später eine Funktion wie get_map_data_from_db(map_id) aufgerufen werden
-        if not map_data:  # Prüfen, ob Daten vorhanden sind
-            return jsonify({"status": "success", "map_data": []})
-        return jsonify({"status": "success", "map_data": map_data})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+# Error Handler
+@app.errorhandler(Exception)
+def handle_error(error):
+    """Globaler Error Handler"""
+    logger.error(f"Unhandled error: {str(error)}")
+    return jsonify({
+        "status": "error",
+        "message": "An unexpected error occurred",
+        "error": str(error)
+    }), 500
 
-
-@app.route('/submit_pathfinding_result', methods=['POST'])
-def submit_pathfinding_result():
-    data = request.get_json()
-    if not data:
-        return jsonify({"status": "error", "message": "Keine Daten bereitgestellt"}), 400
-    try:
-        # Hier könnten Pathfinding-Daten in die Datenbank gespeichert werden (Platzhalter)
-        return jsonify({"status": "success", "message": "Pathfinding-Ergebnisse erfolgreich gespeichert."})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@app.route('/get_task_status', methods=['GET'])
-def get_task_status():
-    try:
-        # Beispiel einer dynamischen Statusabfrage (Platzhalter)
-        tasks = []  # Platzhalter für Datenbankabfrage
-        return jsonify({"status": "success", "tasks": tasks})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@app.route('/documentation_update', methods=['POST'])
-def documentation_update():
-    data = request.get_json()
-    if not data:
-        return jsonify({"status": "error", "message": "Keine Daten bereitgestellt"}), 400
-    try:
-        # Hier könnten Dokumentationsupdates gespeichert werden (Platzhalter)
-        return jsonify({"status": "success", "message": "Dokumentation erfolgreich aktualisiert."})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
+if __name__ == '__main__':
+    # Starten Sie die Anwendung mit SSL im Produktionsmodus
+    app.run(
+        host='0.0.0.0',
+        port=int(os.getenv('PORT', 5000)),
+        ssl_context='adhoc' if os.getenv('ENVIRONMENT') == 'production' else None
+    )
