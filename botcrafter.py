@@ -1,6 +1,3 @@
-
-
-
 import os
 import logging
 import mysql.connector
@@ -162,6 +159,14 @@ def get_entries():
     try:
         conn = mysql.connector.connect(**db_config)
         cursor = conn.cursor()
+
+        # Prüfe, ob Tabelle existiert
+        cursor.execute(f"SHOW TABLES LIKE '{table}'")
+        result = cursor.fetchone()
+        if not result:
+            return jsonify({"status": "error", "message": f"Tabelle '{table}' existiert nicht"}), 404
+
+        # Daten abrufen
         sql = f"SELECT * FROM {table}"
         cursor.execute(sql)
         rows = cursor.fetchall()
@@ -170,6 +175,50 @@ def get_entries():
 
     except mysql.connector.Error as e:
         logger.error(f"Fehler beim Abrufen der Einträge: {str(e)}")
+        return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
+
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+        if 'conn' in locals() and conn:
+            conn.close()
+
+# Beispiel-Route zum Testen von Einfügen und Abrufen
+@app.route('/test-insert-and-fetch', methods=['POST'])
+def test_insert_and_fetch():
+    try:
+        # Einfügen von Testdaten
+        test_data = {
+            "Spalte1": "Wert1",
+            "Spalte2": "Wert2",
+            "Spalte3": "Wert3",
+            "Spalte4": "Wert4"
+        }
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # Prüfe, ob Tabelle existiert
+        cursor.execute("SHOW TABLES LIKE 'Test'")
+        result = cursor.fetchone()
+        if not result:
+            return jsonify({"status": "error", "message": "Tabelle 'Test' existiert nicht"}), 404
+
+        placeholders = ', '.join(['%s'] * len(test_data))
+        columns = ', '.join(test_data.keys())
+        sql = f"INSERT INTO Test ({columns}) VALUES ({placeholders})"
+        cursor.execute(sql, list(test_data.values()))
+        conn.commit()
+
+        # Abrufen der Daten
+        cursor.execute("SELECT * FROM Test")
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        data = [dict(zip(columns, row)) for row in rows]
+
+        return jsonify({"status": "success", "inserted_data": test_data, "fetched_data": data})
+
+    except mysql.connector.Error as e:
+        logger.error(f"Fehler beim Einfügen und Abrufen: {str(e)}")
         return jsonify({"status": "error", "message": f"Fehler: {str(e)}"}), 500
 
     finally:
